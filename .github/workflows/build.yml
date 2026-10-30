@@ -1,0 +1,71 @@
+name: Build DeepSeek iOS IPA
+
+# 上游仓库没有 shared scheme，所以用 -target 构建
+# （-target 不能配 -derivedDataPath，改用 CONFIGURATION_BUILD_DIR）
+on:
+  workflow_dispatch:
+
+jobs:
+  ipa:
+    runs-on: macos-15
+    timeout-minutes: 40
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 选最新 Xcode
+        run: |
+          ls -d /Applications/Xcode*.app 2>/dev/null || true
+          NEWEST=$(ls -d /Applications/Xcode*.app 2>/dev/null | sort -V | tail -n 1)
+          [ -n "$NEWEST" ] && sudo xcode-select -s "$NEWEST"
+          xcodebuild -version
+          xcrun --sdk iphoneos --show-sdk-version
+
+      - name: 查看工程
+        run: |
+          xcodebuild -list -project DeepSeek.xcodeproj 2>&1 | tee -a build.log || true
+
+      - name: 编译（不签名）
+        run: |
+          set -o pipefail
+          xcodebuild build \
+            -project DeepSeek.xcodeproj \
+            -target DeepSeek \
+            -configuration Release \
+            -sdk iphoneos \
+            CONFIGURATION_BUILD_DIR="$(pwd)/out" \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGN_IDENTITY="" \
+            ARCHS=arm64 \
+            ONLY_ACTIVE_ARCH=YES \
+            2>&1 | tee -a build.log | tail -n 60
+
+      - name: 打包 IPA
+        run: |
+          APP=$(find out -maxdepth 1 -name '*.app' | head -n 1)
+          test -n "$APP" || { echo "没有 .app 产物"; ls -R out | head -30; exit 1; }
+          echo "app: $APP"
+          rm -rf Payload DeepSeek-unsigned.ipa
+          mkdir -p Payload
+          cp -R "$APP" Payload/
+          zip -qry DeepSeek-unsigned.ipa Payload
+          ls -lh DeepSeek-unsigned.ipa
+          /usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$APP/Info.plist" || true
+          /usr/libexec/PlistBuddy -c 'Print :MinimumOSVersion' "$APP/Info.plist" || true
+
+      - name: 上传 IPA
+        if: success()
+        uses: actions/upload-artifact@v4
+        with:
+          name: DeepSeek-ipa
+          path: DeepSeek-unsigned.ipa
+          retention-days: 7
+
+      - name: 上传日志
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-log
+          path: build.log
+          retention-days: 3
